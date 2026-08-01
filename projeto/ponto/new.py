@@ -141,7 +141,8 @@ with aba_hist:
 # 3. CADASTRAR NOVO PRODUTO
 with aba_cad:
     st.subheader("Cadastrar Novo Item no Catálogo")
-    with st.form("form_novo", clear_on_submit=True):
+    # Adicionado key="form_cadastro_item" para evitar conflito de formulários duplicados
+    with st.form(key="form_cadastro_item", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
             nome = st.text_input("Nome do Produto (Ex: Pão Doce)")
@@ -164,6 +165,7 @@ with aba_cad:
             }).execute()
             st.success(f"'{nome}' cadastrado!")
             st.rerun()
+
 
 # 4. EDITAR PRODUTO / CATEGORIA
 with aba_edit:
