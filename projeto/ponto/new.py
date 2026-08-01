@@ -1,106 +1,179 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
+from datetime import datetime
 
 # 1. Configuração da página do aplicativo
 st.set_page_config(page_title="Estoque Padaria", page_icon="🥖", layout="wide")
 
-# 2. Conectar ao Supabase usando os dados salvos nos Secrets
+# 2. Conectar ao Supabase
 st_supabase = st.connection("supabase", type=SupabaseConnection)
 
-st.title("🥖 Controle de Estoque - Padaria")
+st.title("🥖 Controle de Estoque & Movimentação Diária")
 
-# --- VISUALIZAR ESTOQUE ---
-st.header("📋 Estoque Atual")
+# Categorias Pré-carregadas
+CATEGORIAS_PADRAO = ["Pão francês", "Assados", "Fritos", "Outra..."]
 
-# Busca todos os itens da tabela 'produtos'
-resposta = st_supabase.table("produtos").select("*").execute()
-produtos = resposta.data
+# Busca produtos cadastrados
+resposta_produtos = st_supabase.table("produtos").select("*").execute()
+produtos = resposta_produtos.data
 
+# --- TABELA DE ESTOQUE ATUAL ---
+st.header("📋 Saldo Atual do Estoque")
 if produtos:
-    # Prepara os dados para exibição sem a coluna de preço
-    dados_exibicao = []
-    for p in produtos:
-        dados_exibicao.append({
+    dados_exibicao = [
+        {
             "ID": p.get("id"),
             "Nome": p.get("nome"),
-            "Quantidade": p.get("quantidade"),
+            "Quantidade Total": p.get("quantidade"),
             "Categoria": p.get("categoria", "Sem Categoria")
-        })
+        }
+        for p in produtos
+    ]
     st.dataframe(dados_exibicao, use_container_width=True)
 else:
-    st.info("Sua tabela ainda está vazia. Cadastre um produto abaixo!")
+    st.info("Nenhum produto cadastrado no catálogo.")
 
 st.divider()
 
-# --- ABA DE AÇÕES (CADASTRAR, EDITAR, EXCLUIR) ---
-aba_cadastrar, aba_editar, aba_excluir = st.tabs(["➕ Cadastrar Produto", "✏️ Editar Produto", "🗑️ Excluir Produto"])
+# --- NAVEGAÇÃO POR ABAS ---
+aba_mov, aba_hist, aba_cad, aba_edit, aba_del = st.tabs([
+    "⚡ Registrar Movimentação", 
+    "📜 Histórico Diário", 
+    "➕ Novo Produto", 
+    "✏️ Editar", 
+    "🗑️ Excluir"
+])
 
-# 1. ABA CADASTRAR
-with aba_cadastrar:
-    st.subheader("Novo Item no Estoque")
-    with st.form("form_novo_produto", clear_on_submit=True):
+# 1. REGISTRAR MOVIMENTAÇÃO (ENTRADA / SAÍDA)
+with aba_mov:
+    st.subheader("Registrar Entrada ou Saída de Estoque")
+    if produtos:
+        opcoes_mov = {p["id"]: f"{p['nome']} (Estoque atual: {p['quantidade']})" for p in produtos}
+        prod_id_mov = st.selectbox("Selecione o Produto", options=list(opcoes_mov.keys()), format_func=lambda x: opcoes_mov[x])
+        
         col1, col2 = st.columns(2)
         with col1:
-            nome = st.text_input("Nome do Produto (Ex: Pão Francês)")
-            categoria = st.text_input("Categoria (Ex: Padaria, Confeitaria, Bebidas)")
+            tipo_mov = st.radio("Tipo de Movimentação", ["Entrada (Adicionar)", "Saída (Retirar)"])
         with col2:
-            quantidade = st.number_input("Quantidade Inicial em Estoque", min_value=0, step=1)
+            qtd_mov = st.number_input("Quantidade", min_value=1, step=1, value=1)
+            
+        if st.button("Salvar Movimentação", type="primary"):
+            prod_atual = next((p for p in produtos if p["id"] == prod_id_mov), None)
+            if prod_atual:
+                is_entrada = "Entrada" in tipo_mov
+                tipo_texto = "Entrada" if is_entrada else "Saída"
+                
+                # Novo saldo calculado
+                novo_saldo = prod_atual["quantidade"] + qtd_mov if is_entrada else prod_atual["quantidade"] - qtd_mov
+                
+                if not is_entrada and novo_saldo < 0:
+                    st.error("Erro: A quantidade de saída é maior do que o estoque disponível!")
+                else:
+                    # 1. Atualiza o saldo na tabela 'produtos'
+                    st_supabase.table("produtos").update({"quantidade": novo_saldo}).eq("id", prod_id_mov).execute()
+                    
+                    # 2. Insere a movimentação no histórico
+                    st_supabase.table("movimentacoes").insert({
+                        "produto_id": prod_id_mov,
+                        "nome_produto": prod_atual["nome"],
+                        "tipo": tipo_texto,
+                        "quantidade": qtd_mov
+                    }).execute()
+                    
+                    st.success(f"{tipo_texto} de {qtd_mov} unidade(s) de '{prod_atual['nome']}' registrada com sucesso!")
+                    st.rerun()
+    else:
+        st.info("Cadastre um produto antes de registrar movimentações.")
 
-        botao_salvar = st.form_submit_button("Salvar no Banco de Dados")
+# 2. HISTÓRICO DIÁRIO
+with aba_hist:
+    st.subheader("Extrato de Movimentações Registradas")
+    resposta_hist = st_supabase.table("movimentacoes").select("*").order("data_movimento", desc=True).execute()
+    historico = resposta_hist.data
+    
+    if historico:
+        dados_hist = [
+            {
+                "Data/Hora": p.get("data_movimento"),
+                "Produto": p.get("nome_produto"),
+                "Tipo": p.get("tipo"),
+                "Quantidade": p.get("quantidade")
+            }
+            for p in historico
+        ]
+        st.dataframe(dados_hist, use_container_width=True)
+    else:
+        st.info("Nenhuma movimentação registrada no histórico ainda.")
 
-    if botao_salvar:
-        if nome.strip() == "":
+# 3. CADASTRAR NOVO PRODUTO
+with aba_cad:
+    st.subheader("Cadastrar Novo Item no Catálogo")
+    with st.form("form_novo", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            nome = st.text_input("Nome do Produto (Ex: Pão Doce)")
+            cat_selecionada = st.selectbox("Categoria", CATEGORIAS_PADRAO)
+            cat_outra = st.text_input("Especifique a Categoria (se escolheu 'Outra...')")
+        with col2:
+            quantidade_inicial = st.number_input("Estoque Inicial", min_value=0, step=1)
+            
+        salvar_cad = st.form_submit_button("Cadastrar Produto")
+
+    if salvar_cad:
+        categoria_final = cat_outra.strip() if cat_selecionada == "Outra..." else cat_selecionada
+        if not nome.strip():
             st.error("Por favor, digite o nome do produto!")
         else:
             st_supabase.table("produtos").insert({
                 "nome": nome,
-                "quantidade": quantidade,
-                "categoria": categoria
+                "quantidade": quantidade_inicial,
+                "categoria": categoria_final
             }).execute()
-            
-            st.success(f"Sucesso! '{nome}' foi salvo no Supabase.")
+            st.success(f"'{nome}' cadastrado!")
             st.rerun()
 
-# 2. ABA EDITAR CATEGORIA E DADOS
-with aba_editar:
-    st.subheader("Editar Produto ou Categoria")
+# 4. EDITAR PRODUTO / CATEGORIA
+with aba_edit:
+    st.subheader("Editar Dados do Produto")
     if produtos:
-        opcoes_editar = {p["id"]: f"{p['nome']} (Categoria Atual: {p.get('categoria', 'Sem Categoria')})" for p in produtos}
-        id_selecionado_editar = st.selectbox("Selecione o produto para editar", options=list(opcoes_editar.keys()), format_func=lambda x: opcoes_editar[x], key="select_editar")
-        
-        # Localiza o produto selecionado na lista
-        prod_edit = next((p for p in produtos if p["id"] == id_selecionado_editar), None)
+        opcoes_edit = {p["id"]: p["nome"] for p in produtos}
+        id_edit = st.selectbox("Selecione o produto para editar", options=list(opcoes_edit.keys()), format_func=lambda x: opcoes_edit[x], key="edit_sel")
+        prod_edit = next((p for p in produtos if p["id"] == id_edit), None)
         
         if prod_edit:
-            with st.form("form_editar_produto"):
-                novo_nome = st.text_input("Nome do Produto", value=prod_edit.get("nome", ""))
-                nova_categoria = st.text_input("Categoria", value=prod_edit.get("categoria", ""))
-                nova_quantidade = st.number_input("Quantidade", min_value=0, step=1, value=int(prod_edit.get("quantidade", 0)))
+            with st.form("form_edit"):
+                novo_nome = st.text_input("Nome", value=prod_edit.get("nome", ""))
                 
-                botao_atualizar = st.form_submit_button("Atualizar Produto")
+                # Trata seleção de categoria pré-carregada
+                cat_atual = prod_edit.get("categoria", "")
+                idx_cat = CATEGORIAS_PADRAO.index(cat_atual) if cat_atual in CATEGORIAS_PADRAO else 3
+                nova_cat_sel = st.selectbox("Categoria", CATEGORIAS_PADRAO, index=idx_cat)
+                nova_cat_outra = st.text_input("Outra Categoria", value=cat_atual if idx_cat == 3 else "")
                 
-                if botao_atualizar:
+                nova_qtd = st.number_input("Ajustar Saldo Total Manualmente", min_value=0, step=1, value=int(prod_edit.get("quantidade", 0)))
+                
+                atualizar = st.form_submit_button("Salvar Alterações")
+                if atualizar:
+                    cat_final = nova_cat_outra.strip() if nova_cat_sel == "Outra..." else nova_cat_sel
                     st_supabase.table("produtos").update({
                         "nome": novo_nome,
-                        "categoria": nova_categoria,
-                        "quantidade": nova_quantidade
-                    }).eq("id", id_selecionado_editar).execute()
-                    
-                    st.success("Produto atualizado com sucesso!")
+                        "categoria": cat_final,
+                        "quantidade": nova_qtd
+                    }).eq("id", id_edit).execute()
+                    st.success("Produto atualizado!")
                     st.rerun()
     else:
-        st.info("Nenhum produto disponível para edição.")
+        st.info("Nenhum produto cadastrado.")
 
-# 3. ABA EXCLUIR REGISTRO
-with aba_excluir:
-    st.subheader("Remover Produto do Estoque")
+# 5. EXCLUIR PRODUTO
+with aba_del:
+    st.subheader("Excluir Produto")
     if produtos:
-        opcoes_excluir = {p["id"]: f"{p['nome']} | Qtd: {p['quantidade']} | Categoria: {p.get('categoria', 'Sem Categoria')}" for p in produtos}
-        id_selecionado_excluir = st.selectbox("Selecione o produto que deseja remover", options=list(opcoes_excluir.keys()), format_func=lambda x: opcoes_excluir[x], key="select_excluir")
-        
-        if st.button("🗑️ Confirmar Exclusão", type="primary"):
-            st_supabase.table("produtos").delete().eq("id", id_selecionado_excluir).execute()
-            st.warning("Registro excluído com sucesso!")
+        opcoes_del = {p["id"]: f"{p['nome']} | Saldo: {p['quantidade']}" for p in produtos}
+        id_del = st.selectbox("Selecione para excluir", options=list(opcoes_del.keys()), format_func=lambda x: opcoes_del[x], key="del_sel")
+        if st.button("🗑️ Confirmar Exclusão do Catálogo", type="primary"):
+            st_supabase.table("produtos").delete().eq("id", id_del).execute()
+            st.warning("Produto excluído!")
             st.rerun()
     else:
-        st.info("Nenhum produto disponível para exclusão.")
+        st.info("Nenhum produto cadastrado.")
