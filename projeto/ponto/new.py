@@ -46,75 +46,73 @@ aba_mov, aba_hist, aba_del_mov, aba_cad, aba_edit, aba_del_prod = st.tabs([
     "🗑️ Excluir Produto"
 ])
 
-# 1. REGISTRAR MOVIMENTAÇÃO (ENTRADA / SAÍDA RÁPIDA EM LOTE)
+# 1. REGISTRAR MOVIMENTAÇÃO (ATUALIZAÇÃO DIRETA DE ESTOQUE)
 with aba_mov:
-    st.subheader("Registrar Movimentação de Estoque")
+    st.subheader("Atualizar Quantidade em Estoque")
     
     if produtos:
-        st.write("Ajuste a quantidade movimentada dos produtos desejados e clique em **Salvar Todas as Movimentações**:")
-        
-        tipo_mov = st.radio("Tipo de Movimentação do Lote", ["Entrada (Adicionar)", "Saída (Retirar)"], horizontal=True, key="radio_tipo_mov")
-        is_entrada = "Entrada" in tipo_mov
-        tipo_texto = "Entrada" if is_entrada else "Saída"
+        st.write("Digite diretamente a **Nova Quantidade em Estoque** de cada produto. As diferenças serão calculadas e registradas no histórico automaticamente:")
 
         df_produtos = pd.DataFrame(produtos)
-        # Garante a coluna categoria tratada
+        
+        # Trata coluna de categoria
         if "categoria" not in df_produtos.columns:
             df_produtos["categoria"] = "Sem Categoria"
         else:
             df_produtos["categoria"] = df_produtos["categoria"].fillna("Sem Categoria")
             
-        df_produtos["Qtd Movimentar"] = 0
+        # Inicia a coluna 'Novo Estoque' com o saldo atual do banco
+        df_produtos["Novo Estoque"] = df_produtos["quantidade"].astype(int)
         
-        # Tabela editável incluindo Categoria
+        # Tabela editável
         df_editado = st.data_editor(
-            df_produtos[["id", "nome", "categoria", "quantidade", "Qtd Movimentar"]],
+            df_produtos[["id", "nome", "categoria", "quantidade", "Novo Estoque"]],
             column_config={
                 "id": None,  # Oculta o ID
                 "nome": st.column_config.Column("Produto", disabled=True),
                 "categoria": st.column_config.Column("Categoria", disabled=True),
                 "quantidade": st.column_config.NumberColumn("Estoque Atual", disabled=True),
-                "Qtd Movimentar": st.column_config.NumberColumn("Qtd Movimentada", min_value=0, step=1)
+                "Novo Estoque": st.column_config.NumberColumn("Novo Estoque Real", min_value=0, step=1)
             },
             hide_index=True,
             use_container_width=True,
-            key="editor_movimentacao_lote"
+            key="editor_atualizacao_direta_estoque"
         )
 
-        if st.button("💾 Salvar Todas as Movimentações", type="primary", use_container_width=True, key="btn_salvar_lote"):
-            movimentacoes_para_processar = df_editado[df_editado["Qtd Movimentar"] > 0]
+        if st.button("💾 Atualizar Estoque e Salvar Histórico", type="primary", use_container_width=True, key="btn_salvar_novo_estoque"):
+            # Filtra apenas linhas em que o 'Novo Estoque' é diferente do 'Estoque Atual'
+            alterados = df_editado[df_editado["Novo Estoque"] != df_editado["quantidade"]]
             
-            if movimentacoes_para_processar.empty:
-                st.warning("Nenhuma quantidade foi informada (tudo permanece zerado).")
+            if alterados.empty:
+                st.warning("Nenhuma quantidade foi alterada.")
             else:
-                erros = []
                 sucessos = 0
                 
-                for _, row in movimentacoes_para_processar.iterrows():
+                for _, row in alterados.iterrows():
                     prod_id = row["id"]
                     nome_prod = str(row["nome"])
                     qtd_atual = int(row["quantidade"])
-                    qtd_mov = int(row["Qtd Movimentar"])
+                    nova_qtd = int(row["Novo Estoque"])
                     
-                    novo_saldo = qtd_atual + qtd_mov if is_entrada else qtd_atual - qtd_mov
+                    diferenca = nova_qtd - qtd_atual
+                    tipo_mov = "Entrada" if diferenca > 0 else "Saída"
+                    qtd_movimentada = abs(diferenca)
                     
-                    if not is_entrada and novo_saldo < 0:
-                        erros.append(f"'{nome_prod}' não possui estoque suficiente para saída de {qtd_mov} un. (Atual: {qtd_atual})")
-                    else:
-                        st_supabase.table("produtos").update({"quantidade": int(novo_saldo)}).eq("id", prod_id).execute()
-                        st_supabase.table("movimentacoes").insert({
-                            "produto_id": prod_id,
-                            "nome_produto": nome_prod,
-                            "tipo": tipo_texto,
-                            "quantidade": int(qtd_mov)
-                        }).execute()
-                        sucessos += 1
+                    # 1. Atualiza o produto com a nova quantidade final no estoque
+                    st_supabase.table("produtos").update({"quantidade": nova_qtd}).eq("id", prod_id).execute()
+                    
+                    # 2. Registra o ajuste no histórico de movimentações
+                    st_supabase.table("movimentacoes").insert({
+                        "produto_id": prod_id,
+                        "nome_produto": nome_prod,
+                        "tipo": tipo_mov,
+                        "quantidade": qtd_movimentada
+                    }).execute()
+                    
+                    sucessos += 1
 
-                if erros:
-                    for err in erros:
-                        st.error(err)
                 if sucessos > 0:
-                    st.success(f"{sucessos} movimentação(ões) de {tipo_texto.lower()} registrada(s) com sucesso!")
+                    st.success(f"Estoque de {sucessos} produto(s) atualizado(s) com sucesso!")
                     st.rerun()
     else:
         st.info("Cadastre um produto antes de registrar movimentações.")
