@@ -37,12 +37,13 @@ else:
 st.divider()
 
 # --- NAVEGAÇÃO POR ABAS ---
-aba_mov, aba_hist, aba_cad, aba_edit, aba_del = st.tabs([
+aba_mov, aba_hist, aba_del_mov, aba_cad, aba_edit, aba_del_prod = st.tabs([
     "⚡ Registrar Movimentação", 
     "📜 Histórico Diário", 
+    "↩️ Excluir Movimentação",
     "➕ Novo Produto", 
-    "✏️ Editar", 
-    "🗑️ Excluir"
+    "✏️ Editar Produto", 
+    "🗑️ Excluir Produto"
 ])
 
 # 1. REGISTRAR MOVIMENTAÇÃO (ENTRADA / SAÍDA RÁPIDA EM LOTE)
@@ -52,20 +53,17 @@ with aba_mov:
     if produtos:
         st.write("Ajuste a quantidade movimentada dos produtos desejados e clique em **Salvar Todas as Movimentações**:")
         
-        # Tipo de operação global
         tipo_mov = st.radio("Tipo de Movimentação do Lote", ["Entrada (Adicionar)", "Saída (Retirar)"], horizontal=True, key="radio_tipo_mov")
         is_entrada = "Entrada" in tipo_mov
         tipo_texto = "Entrada" if is_entrada else "Saída"
 
-        # Prepara DataFrame para edição rápida na tela
         df_produtos = pd.DataFrame(produtos)
-        df_produtos["Qtd Movimentar"] = 0  # Coluna zerada para preenchimento do usuário
+        df_produtos["Qtd Movimentar"] = 0
         
-        # Tabela editável com key única
         df_editado = st.data_editor(
             df_produtos[["id", "nome", "quantidade", "Qtd Movimentar"]],
             column_config={
-                "id": None,  # Oculta o ID na tela
+                "id": None,
                 "nome": st.column_config.Column("Produto", disabled=True),
                 "quantidade": st.column_config.NumberColumn("Estoque Atual", disabled=True),
                 "Qtd Movimentar": st.column_config.NumberColumn("Qtd Movimentada", min_value=0, step=1)
@@ -76,7 +74,6 @@ with aba_mov:
         )
 
         if st.button("💾 Salvar Todas as Movimentações", type="primary", use_container_width=True, key="btn_salvar_lote"):
-            # Filtra apenas itens com alteração de quantidade (> 0)
             movimentacoes_para_processar = df_editado[df_editado["Qtd Movimentar"] > 0]
             
             if movimentacoes_para_processar.empty:
@@ -86,7 +83,6 @@ with aba_mov:
                 sucessos = 0
                 
                 for _, row in movimentacoes_para_processar.iterrows():
-                    # Conversão explícita para tipos primitivos do Python
                     prod_id = row["id"]
                     nome_prod = str(row["nome"])
                     qtd_atual = int(row["quantidade"])
@@ -97,10 +93,7 @@ with aba_mov:
                     if not is_entrada and novo_saldo < 0:
                         erros.append(f"'{nome_prod}' não possui estoque suficiente para saída de {qtd_mov} un. (Atual: {qtd_atual})")
                     else:
-                        # 1. Atualiza o saldo na tabela 'produtos'
                         st_supabase.table("produtos").update({"quantidade": int(novo_saldo)}).eq("id", prod_id).execute()
-                        
-                        # 2. Insere a movimentação no histórico
                         st_supabase.table("movimentacoes").insert({
                             "produto_id": prod_id,
                             "nome_produto": nome_prod,
@@ -127,6 +120,7 @@ with aba_hist:
     if historico:
         dados_hist = [
             {
+                "ID Movimentação": p.get("id"),
                 "Data/Hora": p.get("data_movimento"),
                 "Produto": p.get("nome_produto"),
                 "Tipo": p.get("tipo"),
@@ -138,7 +132,86 @@ with aba_hist:
     else:
         st.info("Nenhuma movimentação registrada no histórico ainda.")
 
-# 3. CADASTRAR NOVO PRODUTO
+# 3. EXCLUIR MOVIMENTAÇÃO EM LOTE (SELEÇÃO MÚLTIPLA)
+with aba_del_mov:
+    st.subheader("Excluir Múltiplas Movimentações")
+    
+    resposta_hist_del = st_supabase.table("movimentacoes").select("*").order("data_movimento", desc=True).execute()
+    historico_del = resposta_hist_del.data
+    
+    if historico_del:
+        st.write("Marque as movimentações que deseja apagar. **O estoque dos produtos será estornado automaticamente.**")
+        
+        df_hist = pd.DataFrame(historico_del)
+        
+        # Exibe a tabela interativa com caixas de seleção (checkbox)
+        tabela_selecao = st.data_editor(
+            df_hist[["id", "data_movimento", "nome_produto", "tipo", "quantidade"]],
+            column_config={
+                "id": st.column_config.Column("ID", disabled=True),
+                "data_movimento": st.column_config.Column("Data/Hora", disabled=True),
+                "nome_produto": st.column_config.Column("Produto", disabled=True),
+                "tipo": st.column_config.Column("Tipo", disabled=True),
+                "quantidade": st.column_config.NumberColumn("Quantidade", disabled=True)
+            },
+            hide_index=True,
+            use_container_width=True,
+            num_rows="fixed",
+            key="editor_selecao_múltipla_mov"
+        )
+
+        # Seleção de IDs diretamente pelas linhas marcadas/editadas na interface do Streamlit
+        st.caption("Para selecionar itens no celular ou computador, utilize os filtros/seletores acima da tabela.")
+        
+        movs_selecionadas = st.multiselect(
+            "Selecione os IDs das movimentações para excluir:",
+            options=[m["id"] for m in historico_del],
+            format_func=lambda x: next((f"ID {m['id']} - {m['nome_produto']} ({m['tipo']}: {m['quantidade']}un)" for m in historico_del if m["id"] == x), str(x)),
+            key="multiselect_movimentacoes_del"
+        )
+        
+        if movs_selecionadas:
+            st.warning(f"⚠️ Você selecionou **{len(movs_selecionadas)}** movimentação(ões) para excluir.")
+            
+            if st.button("🗑️ Confirmar Exclusão Selecionada", type="primary", use_container_width=True, key="btn_confirmar_del_mov_lote"):
+                erros = []
+                sucessos = 0
+                
+                for id_mov in movs_selecionadas:
+                    mov = next((m for m in historico_del if m["id"] == id_mov), None)
+                    if mov:
+                        prod_id = mov.get("produto_id")
+                        qtd_mov = int(mov.get("quantidade", 0))
+                        tipo_mov = mov.get("tipo")
+                        
+                        resp_prod_atual = st_supabase.table("produtos").select("quantidade").eq("id", prod_id).execute()
+                        
+                        if resp_prod_atual.data:
+                            qtd_estoque_atual = int(resp_prod_atual.data[0]["quantidade"])
+                            
+                            # Reverte o estoque: Entrada subtrai, Saída devolve
+                            novo_estoque = qtd_estoque_atual - qtd_mov if "Entrada" in tipo_mov else qtd_estoque_atual + qtd_mov
+                            
+                            if novo_estoque < 0:
+                                erros.append(f"A movimentação ID {id_mov} ({mov['nome_produto']}) deixaria o estoque negativo.")
+                            else:
+                                st_supabase.table("produtos").update({"quantidade": int(novo_estoque)}).eq("id", prod_id).execute()
+                                st_supabase.table("movimentacoes").delete().eq("id", id_mov).execute()
+                                sucessos += 1
+                        else:
+                            st_supabase.table("movimentacoes").delete().eq("id", id_mov).execute()
+                            sucessos += 1
+
+                if erros:
+                    for err in erros:
+                        st.error(err)
+                if sucessos > 0:
+                    st.success(f"{sucessos} movimentação(ões) excluída(s) e estoque(s) ajustado(s) com sucesso!")
+                    st.rerun()
+    else:
+        st.info("Nenhuma movimentação registrada no histórico para excluir.")
+
+# 4. CADASTRAR NOVO PRODUTO
 with aba_cad:
     st.subheader("Cadastrar Novo Item no Catálogo")
     with st.form("form_novo_produto", clear_on_submit=True):
@@ -165,7 +238,7 @@ with aba_cad:
             st.success(f"'{nome}' cadastrado!")
             st.rerun()
 
-# 4. EDITAR PRODUTO / CATEGORIA
+# 5. EDITAR PRODUTO / CATEGORIA
 with aba_edit:
     st.subheader("Editar Dados do Produto")
     if produtos:
@@ -202,9 +275,9 @@ with aba_edit:
     else:
         st.info("Nenhum produto cadastrado.")
 
-# 5. EXCLUIR PRODUTO
-with aba_del:
-    st.subheader("Excluir Produto")
+# 6. EXCLUIR PRODUTO DO CATÁLOGO
+with aba_del_prod:
+    st.subheader("Excluir Produto do Catálogo")
     if produtos:
         opcoes_del = {p["id"]: f"{p['nome']} | Saldo: {p['quantidade']}" for p in produtos}
         id_del = st.selectbox(
@@ -219,4 +292,3 @@ with aba_del:
             st.rerun()
     else:
         st.info("Nenhum produto cadastrado.")
-    
