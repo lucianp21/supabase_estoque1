@@ -58,13 +58,21 @@ with aba_mov:
         tipo_texto = "Entrada" if is_entrada else "Saída"
 
         df_produtos = pd.DataFrame(produtos)
+        # Garante a coluna categoria tratada
+        if "categoria" not in df_produtos.columns:
+            df_produtos["categoria"] = "Sem Categoria"
+        else:
+            df_produtos["categoria"] = df_produtos["categoria"].fillna("Sem Categoria")
+            
         df_produtos["Qtd Movimentar"] = 0
         
+        # Tabela editável incluindo Categoria
         df_editado = st.data_editor(
-            df_produtos[["id", "nome", "quantidade", "Qtd Movimentar"]],
+            df_produtos[["id", "nome", "categoria", "quantidade", "Qtd Movimentar"]],
             column_config={
-                "id": None,
+                "id": None,  # Oculta o ID
                 "nome": st.column_config.Column("Produto", disabled=True),
+                "categoria": st.column_config.Column("Categoria", disabled=True),
                 "quantidade": st.column_config.NumberColumn("Estoque Atual", disabled=True),
                 "Qtd Movimentar": st.column_config.NumberColumn("Qtd Movimentada", min_value=0, step=1)
             },
@@ -144,7 +152,6 @@ with aba_del_mov:
         
         df_hist = pd.DataFrame(historico_del)
         
-        # Exibe a tabela interativa com caixas de seleção (checkbox)
         tabela_selecao = st.data_editor(
             df_hist[["id", "data_movimento", "nome_produto", "tipo", "quantidade"]],
             column_config={
@@ -159,9 +166,6 @@ with aba_del_mov:
             num_rows="fixed",
             key="editor_selecao_múltipla_mov"
         )
-
-        # Seleção de IDs diretamente pelas linhas marcadas/editadas na interface do Streamlit
-        st.caption("Para selecionar itens no celular ou computador, utilize os filtros/seletores acima da tabela.")
         
         movs_selecionadas = st.multiselect(
             "Selecione os IDs das movimentações para excluir:",
@@ -188,8 +192,6 @@ with aba_del_mov:
                         
                         if resp_prod_atual.data:
                             qtd_estoque_atual = int(resp_prod_atual.data[0]["quantidade"])
-                            
-                            # Reverte o estoque: Entrada subtrai, Saída devolve
                             novo_estoque = qtd_estoque_atual - qtd_mov if "Entrada" in tipo_mov else qtd_estoque_atual + qtd_mov
                             
                             if novo_estoque < 0:
